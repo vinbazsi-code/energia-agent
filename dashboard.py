@@ -17,12 +17,30 @@ from collectors.hupx_ida import get_live_prices as get_live_hupx_ida_prices
 from collectors.hupx_idc import get_live_prices as get_live_hupx_idc_prices
 from collectors.mavir_frekvencia import get_live_frequency
 from collectors.mavir_rendszerallapot_realtime import get_live_rendszerallapot
-from storage import DB_PATH, connect
+from storage import DB_PATH, connect, get_latest_insight
 
 st.set_page_config(page_title="Energiakereskedési elemző", layout="wide")
 
 st.title("Energiakereskedési elemző")
 st.caption(f"Adatforrás: {DB_PATH}")
+
+st.subheader("📋 Legutóbbi stratégiajavaslat (LLM-összefoglaló)")
+try:
+    conn = connect()
+    try:
+        insight = get_latest_insight(conn)
+    finally:
+        conn.close()
+    if insight:
+        st.caption(f"Készült: {insight['generated_at']} · modell: {insight['model']}")
+        with st.container(border=True):
+            st.markdown(insight["content"])
+    else:
+        st.info("Még nincs elmentett stratégiajavaslat. Futtasd le: `python strategy_agent.py`")
+except Exception as e:
+    st.error(f"Nem sikerült betölteni a stratégiajavaslatot: {e}")
+
+st.divider()
 
 
 def rendszer_badge(value: float | None, convention: str) -> str:

@@ -27,6 +27,16 @@ CREATE TABLE IF NOT EXISTS measurements (
     PRIMARY KEY (timestamp_utc, source, scope, asset_id, metric)
 );
 CREATE INDEX IF NOT EXISTS idx_measurements_metric_time ON measurements(metric, timestamp_utc);
+
+CREATE TABLE IF NOT EXISTS insights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    generated_at TEXT NOT NULL,
+    period_start TEXT,
+    period_end TEXT,
+    model TEXT NOT NULL,
+    content TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_insights_generated_at ON insights(generated_at);
 """
 
 UPSERT_SQL = """
@@ -53,3 +63,27 @@ def upsert_measurements(conn: sqlite3.Connection, rows: Iterable[dict]) -> int:
     conn.executemany(UPSERT_SQL, rows)
     conn.commit()
     return len(rows)
+
+
+def save_insight(conn: sqlite3.Connection, generated_at: str, model: str, content: str,
+                  period_start: str | None = None, period_end: str | None = None) -> int:
+    """Elment egy LLM-generált piaci összefoglalót/stratégiajavaslatot. Visszaadja az új sor id-jét."""
+    cur = conn.execute(
+        "INSERT INTO insights (generated_at, period_start, period_end, model, content) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (generated_at, period_start, period_end, model, content),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_latest_insight(conn: sqlite3.Connection) -> dict | None:
+    cur = conn.execute(
+        "SELECT id, generated_at, period_start, period_end, model, content "
+        "FROM insights ORDER BY generated_at DESC LIMIT 1"
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    keys = ["id", "generated_at", "period_start", "period_end", "model", "content"]
+    return dict(zip(keys, row))
