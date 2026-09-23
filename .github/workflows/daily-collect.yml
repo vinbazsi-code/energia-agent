@@ -1,0 +1,33 @@
+name: Napi MAVIR adatgyűjtés
+
+on:
+  schedule:
+    - cron: "30 5 * * *"  # kb. 06:30-07:30 helyi idő (CET/CEST), a MAVIR ~06:00-as frissítése után
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - run: python collectors/mavir_kiegyenlito.py
+      - run: python collectors/mavir_rendszerallapot_realtime.py
+      - run: python collectors/mavir_frekvencia.py
+
+      - name: Adatbázis visszamentése a repóba
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/energia.db
+          git diff --cached --quiet || git commit -m "Napi MAVIR adatfrissítés $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push
