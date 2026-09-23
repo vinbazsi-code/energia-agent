@@ -192,13 +192,17 @@ min_ts = wide.index.min().to_pydatetime()
 max_ts = wide.index.max().to_pydatetime()
 
 st.sidebar.header("Szűrés")
-default_start = max(min_ts, max_ts - timedelta(days=8))  # a kiegyenlítő ár ~5-6 napos csúszása is beleférjen
+# az alapértelmezett tartomány a "mára" végződjön, ne az időjárás-előrejelzés jövőjéig -
+# aki meg akarja nézni az előrejelzést, kézzel kitolhatja a végdátumot max_ts-ig
+now_ts = min(pd.Timestamp.now(tz="UTC").to_pydatetime(), max_ts)
+default_start = max(min_ts, now_ts - timedelta(days=8))  # a kiegyenlítő ár ~5-6 napos csúszása is beleférjen
 date_range = st.sidebar.date_input(
     "Időszak (helyi dátum)",
-    value=(default_start.date(), max_ts.date()),
+    value=(default_start.date(), now_ts.date()),
     min_value=min_ts.date(),
     max_value=max_ts.date(),
 )
+st.sidebar.caption("A végdátumot kitolhatod a jövőbe is, hogy lásd a HUPX/időjárás-előrejelzést.")
 
 if isinstance(date_range, tuple) and len(date_range) == 2:
     start_date, end_date = date_range
@@ -316,6 +320,37 @@ if price_cols:
     st.line_chart(filtered[price_cols])
 else:
     st.info("Nincs árszint adat ebben az időszakban.")
+
+st.subheader("Időjárás - Balassagyarmat (napsugárzás, hőmérséklet)")
+st.caption(
+    "Open-Meteo (ingyenes, API-kulcs nélküli) előrejelzés/mért adat a napelempark-portfólió "
+    "helyszínére. A szűrt időszak végét kitolva a jövőbe kb. 7 napos előrejelzés is látszik - "
+    "ez segíthet a várható PV-termelés és így a töltési stratégia tervezésében."
+)
+weather_cols = [c for c in ("weather_shortwave_radiation_w_m2", "weather_direct_radiation_w_m2") if c in filtered]
+if weather_cols:
+    radiation_chart = (
+        alt.Chart(filtered[weather_cols].reset_index().melt(id_vars="timestamp_utc", var_name="típus", value_name="W/m2"))
+        .mark_line()
+        .encode(
+            x=alt.X("timestamp_utc:T", title="Időpont"),
+            y=alt.Y("W/m2:Q", title="Napsugárzás (W/m2)"),
+            color=alt.Color(
+                "típus:N",
+                legend=alt.Legend(title=None),
+                scale=alt.Scale(
+                    domain=["weather_shortwave_radiation_w_m2", "weather_direct_radiation_w_m2"],
+                    range=["#f39c12", "#e67e22"],
+                ),
+            ),
+        )
+        .properties(height=250)
+    )
+    st.altair_chart(radiation_chart, use_container_width=True)
+if "weather_temp_c" in filtered:
+    st.line_chart(filtered["weather_temp_c"])
+if not weather_cols and "weather_temp_c" not in filtered:
+    st.info("Nincs időjárás-adat ebben az időszakban.")
 
 st.subheader("Órás mintázat (átlag a kiválasztott időszakra)")
 st.caption(

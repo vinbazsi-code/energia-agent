@@ -31,6 +31,8 @@ jobs:
       - run: python collectors/hupx_idc.py
       - run: sleep 5
       - run: python collectors/hupx_ida.py
+      - run: sleep 5
+      - run: python collectors/weather.py
 
       - name: Adatbázis visszamentése a repóba
         run: |
