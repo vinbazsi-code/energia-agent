@@ -1,0 +1,156 @@
+"""Közös segédfüggvények az ENTSO-E Transparency Platform RESTful API-hoz.
+
+FONTOS - MÉG NINCS ÉLESÍTVE / NEM TESZTELT: ehhez a felhasználónak előbb
+regisztrálnia kell a transparency.entsoe.eu-n, emailt küldenie a
+transparency@entsoe.eu címre ("Restful API access" tárggyal), és a
+jóváhagyás után (kb. 3 munkanap) az Account Settings alatt generálnia
+egy security tokent. Amíg ez nincs meg, ez a modul csak a dokumentáció
+alapján megírt, valós adaton még nem kipróbált kódváz.
+
+API alap: https://web-api.tp.entsoe.eu/api
+A token SOSEM kerül a kódba/git-be - a ENTSOE_API_TOKEN környezeti
+változóból olvassuk.
+
+Magyarország EIC/domain kódja: 10YHU-MAVIR----U
+
+Releváns dokumentum-típusok (IEC 62325 szabvány, ENTSO-E doksi alapján):
+    A83 = Activated balancing quantities (aktivált szabályozási energia mennyiség)
+    A84 = Activated balancing prices (aktivált szabályozási energia ár)
+    A85 = Imbalance prices (kiegyenlítő energia/imbalance árak)
+    A86 = Imbalance volume (imbalance mennyiség)
+
+processType (melyik szabályozási termék/platform):
+    A67 = Central Selection aFRR  <- ez felel meg a PICASSO platformnak
+    A68 = Local Selection aFRR
+    A60 = Scheduled activation mFRR  <- ez felel meg a MARI platformnak
+    A61 = Direct activation mFRR
+
+businessType:
+    A96 = aFRR
+    A97 = mFRR
+
+A válasz XML (IEC 62325 market document), nem JSON - lásd parse_timeseries_points().
+"""
+
+import os
+import re
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from xml.etree import ElementTree
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from http_utils import get_with_retry  # noqa: E402
+
+API_BASE = "https://web-api.tp.entsoe.eu/api"
+USER_AGENT = "energia-agent-collector/0.1 (kontakt: vinbazsi@gmail.com)"
+HU_DOMAIN = "10YHU-MAVIR----U"
+
+RESOLUTION_TO_TIMEDELTA = {
+    "PT15M": timedelta(minutes=15),
+    "PT30M": timedelta(minutes=30),
+    "PT60M": timedelta(hours=1),
+    "P1D": timedelta(days=1),
+}
+
+
+class MissingTokenError(RuntimeError):
+    pass
+
+
+def get_token() -> str:
+    token = os.environ.get("ENTSOE_API_TOKEN")
+    if not token:
+        raise MissingTokenError(
+            "Hiányzik az ENTSOE_API_TOKEN környezeti változó. Regisztrálj a "
+            "transparency.entsoe.eu-n, kérj RESTful API hozzáférést, majd add meg "
+            "a tokent: $env:ENTSOE_API_TOKEN = '...' (PowerShell) mielőtt futtatod."
+        )
+    return token
+
+
+def fetch_xml(params: dict) -> str:
+    """Egy ENTSO-E API hívás, a securityTokent automatikusan hozzáadva."""
+    token = get_token()
+    query_params = {**params, "securityToken": token}
+    query = "&".join(f"{k}={v}" for k, v in query_params.items())
+    url = f"{API_BASE}?{query}"
+    resp = get_with_retry(url, headers={"User-Agent": USER_AGENT}, timeout=30)
+    return resp.text
+
+
+def _strip_ns(tag: str) -> str:
+    return tag.split("}")[-1] if "}" in tag else tag
+
+
+def parse_timeseries_points(xml_text: str) -> list[tuple[datetime, dict]]:
+    """Generikus IEC 62325 TimeSeries/Period/Point parser.
+
+    Minden Point-hoz visszaadja az UTC időpontját és az alatta talált
+    összes mezőt (tag_name -> szám/szöveg érték) - így nem kell előre
+    pontosan ismerni az A84/A85/A83 dokumentumok különböző mezőneveit
+    (pl. 'imbalance_Price.amount' vs 'activation_Price.amount').
+
+    FIGYELEM: ez a parser még nem lett valós ENTSO-E válaszon leellenőrizve
+    (token hiányában) - amint van adat, validálni kell a kimenetet!
+    """
+    root = ElementTree.fromstring(xml_text)
+    results: list[tuple[datetime, dict]] = []
+
+    for period in root.iter():
+        if _strip_ns(period.tag) != "Period":
+            continue
+
+        interval_start = None
+        resolution_td = None
+        points: list[tuple[int, dict]] = []
+
+        for child in period:
+            tag = _strip_ns(child.tag)
+            if tag == "timeInterval":
+                for sub in child:
+                    if _strip_ns(sub.tag) == "start":
+                        interval_start = datetime.strptime(sub.text.strip(), "%Y-%m-%dT%H:%MZ").replace(
+                            tzinfo=timezone.utc
+                        )
+            elif tag == "resolution":
+                resolution_td = RESOLUTION_TO_TIMEDELTA.get(child.text.strip())
+            elif tag == "Point":
+                position = None
+                fields = {}
+                for sub in child:
+                    sub_tag = _strip_ns(sub.tag)
+                    if sub_tag == "position":
+                        position = int(sub.text.strip())
+                    else:
+                        fields[sub_tag] = sub.text.strip() if sub.text else None
+                if position is not None:
+                    points.append((position, fields))
+
+        if interval_start is None or resolution_td is None:
+            continue
+
+        for position, fields in points:
+            ts = interval_start + (position - 1) * resolution_td
+            numeric_fields = {}
+            for k, v in fields.items():
+                if v is None:
+                    continue
+                try:
+                    numeric_fields[k] = float(v)
+                except ValueError:
+                    continue
+            if numeric_fields:
+                results.append((ts, numeric_fields))
+
+    return results
+
+
+_SANITIZE_RE = re.compile(r"[^a-z0-9_]+")
+
+
+def sanitize_metric_name(prefix: str, field_name: str) -> str:
+    name = f"{prefix}_{field_name}".lower().replace(".", "_")
+    return _SANITIZE_RE.sub("_", name).strip("_")
