@@ -12,6 +12,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from collectors.hupx_dam import get_live_prices as get_live_hupx_prices
 from collectors.mavir_frekvencia import get_live_frequency
 from collectors.mavir_rendszerallapot_realtime import get_live_rendszerallapot
 from storage import DB_PATH, connect
@@ -50,6 +51,50 @@ def load_live_rendszerallapot() -> pd.DataFrame:
     ra_df["timestamp_utc"] = pd.to_datetime(ra_df["timestamp_utc"], utc=True)
     return ra_df.set_index("timestamp_utc")
 
+
+@st.cache_data(ttl=300)
+def load_live_hupx() -> pd.DataFrame:
+    rows = get_live_hupx_prices(days_back=1, days_forward=1)
+    hupx_df = pd.DataFrame(rows, columns=["timestamp_utc", "hupx_price_eur_mwh"])
+    hupx_df["timestamp_utc"] = pd.to_datetime(hupx_df["timestamp_utc"], utc=True)
+    return hupx_df.set_index("timestamp_utc").sort_index()
+
+
+st.subheader("HUPX day-ahead ár (EUR/MWh)")
+st.caption(
+    "Közvetlenül a HUPX Labs API-ból - ez az EGYETLEN előretekintő adatforrás a rendszerben: a "
+    "day-ahead aukció kb. dél körül (CET) lezár minden nap, utána már a HOLNAPI árak is ismertek."
+)
+try:
+    live_hupx = load_live_hupx()
+    if not live_hupx.empty:
+        now_utc = pd.Timestamp.now(tz="UTC")
+        future = live_hupx[live_hupx.index >= now_utc]
+        if not future.empty:
+            next_val = future["hupx_price_eur_mwh"].iloc[0]
+            next_ts = future.index[0]
+            st.metric("Következő negyedóra ára (EUR/MWh)", f"{next_val:,.2f}", help=str(next_ts))
+        hupx_chart = (
+            alt.Chart(live_hupx.reset_index())
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("timestamp_utc:T", title="Időpont"),
+                y=alt.Y("hupx_price_eur_mwh:Q", title="EUR/MWh"),
+            )
+            .properties(height=280)
+        )
+        st.altair_chart(hupx_chart, use_container_width=True)
+
+        local_now = pd.Timestamp.now(tz="Europe/Budapest")
+        has_tomorrow = (live_hupx.index.tz_convert("Europe/Budapest").date > local_now.date()).any()
+        if not has_tomorrow:
+            st.info("A holnapi aukció még nem zárult le (kb. dél körül, CET) - egyelőre csak a mai/korábbi árak láthatók.")
+    else:
+        st.info("Nincs élő HUPX adat.")
+except Exception as e:
+    st.error(f"Nem sikerült lekérni az élő HUPX árat: {e}")
+
+st.divider()
 
 st.subheader("Jelenlegi rendszerállapot")
 st.caption(
