@@ -251,6 +251,93 @@ if price_cols:
 else:
     st.info("Nincs árszint adat ebben az időszakban.")
 
+st.subheader("Órás mintázat (átlag a kiválasztott időszakra)")
+st.caption(
+    "A rendszerirány és az egységár átlaga óránkénti bontásban (helyi idő), a szűrt időszak minden "
+    "napjára összesítve - segít azonosítani, mikor jellemző a hiány/többlet és a magasabb/alacsonyabb "
+    "ár a nap folyamán."
+)
+if "rendszerirany_kwh" in filtered:
+    ri = filtered["rendszerirany_kwh"].dropna()
+    if not ri.empty:
+        hours = ri.index.tz_convert("Europe/Budapest").hour
+        hourly_ri = (
+            pd.DataFrame({"óra": hours, "kWh": ri.values})
+            .groupby("óra")["kWh"]
+            .mean()
+            .reset_index()
+        )
+        hourly_ri_chart = (
+            alt.Chart(hourly_ri)
+            .mark_bar()
+            .encode(
+                x=alt.X("óra:O", title="Óra (helyi idő)"),
+                y=alt.Y("kWh:Q", title="Átlagos rendszerirány (kWh)"),
+                color=alt.condition(alt.datum.kWh > 0, alt.value("#2ecc71"), alt.value("#e74c3c")),
+            )
+            .properties(height=250, title="Rendszerirány óránkénti átlaga")
+        )
+        st.altair_chart(hourly_ri_chart, use_container_width=True)
+
+    price_hourly_frames = []
+    for col, label in (("pozitiv_ar_huf_per_kwh", "Pozitív"), ("negativ_ar_huf_per_kwh", "Negatív")):
+        if col in filtered:
+            series = filtered[col].dropna()
+            if not series.empty:
+                hours = series.index.tz_convert("Europe/Budapest").hour
+                grouped = pd.DataFrame({"óra": hours, "HUF/kWh": series.values}).groupby("óra")["HUF/kWh"].mean()
+                price_hourly_frames.append(pd.DataFrame({"óra": grouped.index, "HUF/kWh": grouped.values, "típus": label}))
+    if price_hourly_frames:
+        price_hourly = pd.concat(price_hourly_frames)
+        price_hourly_chart = (
+            alt.Chart(price_hourly)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("óra:O", title="Óra (helyi idő)"),
+                y=alt.Y("HUF/kWh:Q", title="Átlagos egységár (HUF/kWh)"),
+                color=alt.Color("típus:N", legend=alt.Legend(title=None)),
+            )
+            .properties(height=250, title="Egységár óránkénti átlaga")
+        )
+        st.altair_chart(price_hourly_chart, use_container_width=True)
+else:
+    st.info("Nincs adat az órás mintázathoz.")
+
+st.subheader("Árszint eloszlás")
+st.caption(
+    "Hisztogram: milyen gyakran fordul elő az adott árszint a kiválasztott időszakban - "
+    "segíthet az arbitrázs küszöbök meghatározásában."
+)
+if price_cols:
+    price_long = (
+        filtered[price_cols]
+        .reset_index()
+        .melt(id_vars="timestamp_utc", value_vars=price_cols, var_name="típus", value_name="ár")
+        .dropna()
+    )
+    price_long["típus"] = price_long["típus"].map(
+        {"pozitiv_ar_huf_per_kwh": "Pozitív", "negativ_ar_huf_per_kwh": "Negatív"}
+    )
+    hist_chart = (
+        alt.Chart(price_long)
+        .mark_bar(opacity=0.6)
+        .encode(
+            x=alt.X("ár:Q", bin=alt.Bin(maxbins=40), title="HUF/kWh"),
+            y=alt.Y("count():Q", title="Előfordulások száma (15 perces intervallum)", stack=None),
+            color=alt.Color("típus:N", legend=alt.Legend(title=None)),
+        )
+        .properties(height=280)
+    )
+    st.altair_chart(hist_chart, use_container_width=True)
+    st.dataframe(
+        filtered[price_cols].describe().T.round(2).rename(
+            columns={"count": "db", "mean": "átlag", "std": "szórás", "min": "min", "max": "max"}
+        ),
+        use_container_width=True,
+    )
+else:
+    st.info("Nincs árszint adat az eloszláshoz.")
+
 st.subheader("Nyers adattábla")
 st.dataframe(filtered, use_container_width=True)
 
