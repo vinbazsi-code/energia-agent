@@ -22,12 +22,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import openpyxl
-import requests
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 import storage  # noqa: E402  (a sys.path bővítés után importálható csak)
+from http_utils import get_with_retry  # noqa: E402
 
 BASE = "https://mavir.hu"
 FOLDER_LISTING_URL = f"{BASE}/web/riportok/elozetes-kiegyenlito-energia-egysegarak"
@@ -55,10 +55,8 @@ def setup_logging() -> None:
     log.addHandler(console_handler)
 
 
-def http_get(url: str) -> requests.Response:
-    resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
-    resp.raise_for_status()
-    return resp
+def http_get(url: str):
+    return get_with_retry(url, headers={"User-Agent": USER_AGENT}, timeout=30)
 
 
 def find_current_month_folder_url(prefix: str) -> str:

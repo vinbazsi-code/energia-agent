@@ -22,12 +22,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import openpyxl
-import requests
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 import storage  # noqa: E402
+from http_utils import get_with_retry  # noqa: E402
 
 CHART_ID = "1000727"
 CHART_EXPORT_URL = f"https://rtdwweb.mavir.hu/rtdwweb/webuser/chart/{CHART_ID}/export"
@@ -63,8 +63,7 @@ def fetch_chart_xlsx(hours_back: int = 48) -> bytes:
         f"{CHART_EXPORT_URL}?exportType=xlsx&fromTime={from_ms}&toTime={to_ms}"
         f"&periodType=min&period=15"
     )
-    resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
-    resp.raise_for_status()
+    resp = get_with_retry(url, headers={"User-Agent": USER_AGENT}, timeout=30)
     content_type = resp.headers.get("Content-Type", "")
     if "spreadsheet" not in content_type:
         raise RuntimeError(f"Váratlan Content-Type ({content_type}) ettől: {url}")
