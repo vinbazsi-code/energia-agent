@@ -1,23 +1,14 @@
-"""HUPX Day-Ahead Market (DAM) árfigyelő gyűjtő.
+"""HUPX Intraday Continuous (IDC) piac árfigyelő gyűjtő.
 
-A HUPX Labs publikus, hitelesítés nélkül elérhető JSON API-jából (nincs
-hivatalos dokumentáció-link nélküli scraping, ez egy rendes REST API)
-tölti le a magyar (HU) day-ahead aukciós órás/negyedórás árakat:
+A HUPX Labs publikus API-jából (nincs hitelesítés az olvasáshoz) tölti
+le a folyamatos kereskedésű intraday piac negyedórás összesített
+adatait: forgalommal súlyozott átlagár (VWAP) és kereskedett mennyiség.
 
-    https://labs.hupx.hu/data/v1/dam_aggregated_trading_data_15min
-        ?filter=DeliveryDay__gte__{date},DeliveryDay__lte__{date},Region__in__HU
+    https://labs.hupx.hu/data/v1/idc_quarterhourly
+        ?filter=DeliveryDate__gte__{date},DeliveryDate__lte__{date},Region__in__HU
 
-A HUPX day-ahead aukció a szállítási napot MEGELŐZŐ napon zárul (kb.
-dél körül), tehát ez a gyűjtő tipikusan a "holnapi" napra már ismert
-árakat is látja - ez az egyetlen ELŐRETEKINTŐ adatforrás a rendszerben
-(a MAVIR-adatok mind visszatekintőek).
-
-FONTOS: a "Quarter hour" (ProductQH, 1-96) a HUPX dokumentációja szerint
-mindig CET (UTC+1) szerint van indexelve, FÜGGETLENÜL a nyári/téli
-időszámítástól (ez a szokásos EU day-ahead piaci konvenció, hogy mindig
-pontosan 96 negyedóra legyen egy napban, ne 92/100 a DST-váltás miatt).
-
-Az ár EUR/MWh-ban van (nincs HUF-átváltás beépítve).
+Itt a 'DeliveryDate' mező már közvetlenül UTC időpont (nincs szükség a
+DAM/IDA-nál használt fix-CET átszámításra).
 """
 
 import logging
@@ -28,20 +19,20 @@ from pathlib import Path
 _COLLECTORS_DIR = Path(__file__).resolve().parent
 if str(_COLLECTORS_DIR) not in sys.path:
     sys.path.insert(0, str(_COLLECTORS_DIR))
-from hupx_common import PROJECT_ROOT, fetch, qh_to_utc  # noqa: E402
+from hupx_common import PROJECT_ROOT, fetch  # noqa: E402
 
 sys.path.insert(0, str(PROJECT_ROOT)) if str(PROJECT_ROOT) not in sys.path else None
 import storage  # noqa: E402
 
-ENDPOINT = "dam_aggregated_trading_data_15min"
-DATE_FIELD = "DeliveryDay"
-SOURCE_NAME = "HUPX_DAM"
+ENDPOINT = "idc_quarterhourly"
+DATE_FIELD = "DeliveryDate"
+SOURCE_NAME = "HUPX_IDC"
 
 LOG_DIR = PROJECT_ROOT / "logs"
-DAYS_BACK = 3  # ennyi napra megyünk vissza minden futáskor (finalizálás/korrekció miatt)
-DAYS_FORWARD = 1  # a "holnapi" ismert nap
+DAYS_BACK = 3
+DAYS_FORWARD = 1
 
-log = logging.getLogger("hupx_dam")
+log = logging.getLogger("hupx_idc")
 
 
 def setup_logging() -> None:
@@ -49,7 +40,7 @@ def setup_logging() -> None:
     log.setLevel(logging.INFO)
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
 
-    file_handler = logging.FileHandler(LOG_DIR / "hupx_dam.log", encoding="utf-8")
+    file_handler = logging.FileHandler(LOG_DIR / "hupx_idc.log", encoding="utf-8")
     file_handler.setFormatter(formatter)
     log.addHandler(file_handler)
 
@@ -70,46 +61,54 @@ def fetch_range(days_back: int, days_forward: int) -> list[dict]:
             log.warning("Nap kihagyva (%s): %s", day, e)
             continue
         if rows:
-            log.info("%s: %d negyedórás ár", day, len(rows))
+            log.info("%s: %d negyedórás sor", day, len(rows))
         all_rows.extend(rows)
     return all_rows
 
 
 def get_live_prices(days_back: int = 1, days_forward: int = 1) -> list[tuple[datetime, float]]:
-    """Kényelmi függvény a dashboardnak: közvetlen, adatbázis nélküli élő lekérdezés."""
+    """Kényelmi függvény a dashboardnak: közvetlen, adatbázis nélküli élő lekérdezés (VWAP ár)."""
     rows = fetch_range(days_back, days_forward)
-    return [(qh_to_utc(r["DeliveryDay"], int(r["ProductQH"])), r["Price"]) for r in rows]
+    result = []
+    for r in rows:
+        if r.get("PriceVWAPLast") is None:
+            continue
+        ts = datetime.fromisoformat(r["DeliveryDate"].replace("Z", "+00:00"))
+        result.append((ts, r["PriceVWAPLast"]))
+    return sorted(result)
 
 
 def collect(days_back: int = DAYS_BACK, days_forward: int = DAYS_FORWARD) -> int:
     all_rows = fetch_range(days_back, days_forward)
     collected_at = datetime.now(timezone.utc)
     collected_iso = collected_at.isoformat()
+
     measurement_rows = []
     for row in all_rows:
-        ts = qh_to_utc(row["DeliveryDay"], int(row["ProductQH"])).isoformat()
-        measurement_rows.append(
-            {
-                "timestamp_utc": ts,
-                "source": SOURCE_NAME,
-                "scope": "system",
-                "asset_id": "",
-                "metric": "hupx_dam_price_eur_mwh",
-                "value": row["Price"],
-                "unit": "EUR/MWh",
-                "collected_at": collected_iso,
-            }
-        )
-        if row.get("Volume") is not None:
+        ts = datetime.fromisoformat(row["DeliveryDate"].replace("Z", "+00:00")).isoformat()
+        if row.get("PriceVWAPLast") is not None:
             measurement_rows.append(
                 {
                     "timestamp_utc": ts,
                     "source": SOURCE_NAME,
                     "scope": "system",
                     "asset_id": "",
-                    "metric": "hupx_dam_volume_mw",
-                    "value": row["Volume"],
-                    "unit": "MW",
+                    "metric": "hupx_idc_vwap_price_eur_mwh",
+                    "value": row["PriceVWAPLast"],
+                    "unit": "EUR/MWh",
+                    "collected_at": collected_iso,
+                }
+            )
+        if row.get("VolumeTotalTraded") is not None:
+            measurement_rows.append(
+                {
+                    "timestamp_utc": ts,
+                    "source": SOURCE_NAME,
+                    "scope": "system",
+                    "asset_id": "",
+                    "metric": "hupx_idc_volume_traded_mwh",
+                    "value": row["VolumeTotalTraded"],
+                    "unit": "MWh",
                     "collected_at": collected_iso,
                 }
             )

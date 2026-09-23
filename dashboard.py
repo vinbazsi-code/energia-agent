@@ -12,7 +12,9 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from collectors.hupx_dam import get_live_prices as get_live_hupx_prices
+from collectors.hupx_dam import get_live_prices as get_live_hupx_dam_prices
+from collectors.hupx_ida import get_live_prices as get_live_hupx_ida_prices
+from collectors.hupx_idc import get_live_prices as get_live_hupx_idc_prices
 from collectors.mavir_frekvencia import get_live_frequency
 from collectors.mavir_rendszerallapot_realtime import get_live_rendszerallapot
 from storage import DB_PATH, connect
@@ -54,41 +56,60 @@ def load_live_rendszerallapot() -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def load_live_hupx() -> pd.DataFrame:
-    rows = get_live_hupx_prices(days_back=1, days_forward=1)
-    hupx_df = pd.DataFrame(rows, columns=["timestamp_utc", "hupx_price_eur_mwh"])
-    hupx_df["timestamp_utc"] = pd.to_datetime(hupx_df["timestamp_utc"], utc=True)
-    return hupx_df.set_index("timestamp_utc").sort_index()
+    """A három fő HUPX piaci ár (DAM, IDC VWAP, IDA1) egy hosszú formátumú táblában."""
+    frames = []
+    for label, rows in (
+        ("Day-Ahead (DAM)", get_live_hupx_dam_prices(days_back=1, days_forward=1)),
+        ("Intraday Continuous (IDC VWAP)", get_live_hupx_idc_prices(days_back=1, days_forward=1)),
+        ("Intraday Auction (IDA1)", get_live_hupx_ida_prices(round_no=1, days_back=1, days_forward=1)),
+    ):
+        if rows:
+            df = pd.DataFrame(rows, columns=["timestamp_utc", "ár"])
+            df["piac"] = label
+            frames.append(df)
+    if not frames:
+        return pd.DataFrame(columns=["timestamp_utc", "ár", "piac"])
+    combined = pd.concat(frames, ignore_index=True)
+    combined["timestamp_utc"] = pd.to_datetime(combined["timestamp_utc"], utc=True)
+    return combined.sort_values("timestamp_utc")
 
 
-st.subheader("HUPX day-ahead ár (EUR/MWh)")
+st.subheader("HUPX piaci árak (EUR/MWh)")
 st.caption(
-    "Közvetlenül a HUPX Labs API-ból - ez az EGYETLEN előretekintő adatforrás a rendszerben: a "
-    "day-ahead aukció kb. dél körül (CET) lezár minden nap, utána már a HOLNAPI árak is ismertek."
+    "Közvetlenül a HUPX Labs API-ból, három piaci szegmens összehasonlítva: **Day-Ahead (DAM)** - az "
+    "egyetlen előretekintő adatforrás a rendszerben (a napi aukció kb. dél körül, CET, lezár, utána a "
+    "HOLNAPI árak is ismertek); **Intraday Continuous (IDC)** - a szállításhoz közeli folyamatos "
+    "kereskedés forgalommal súlyozott átlagára; **Intraday Auction (IDA1)** - az első napon belüli "
+    "aukciós kör ára. Az eltérésük mutatja, mennyire tért el a piac a day-ahead várakozástól."
 )
 try:
     live_hupx = load_live_hupx()
     if not live_hupx.empty:
         now_utc = pd.Timestamp.now(tz="UTC")
-        future = live_hupx[live_hupx.index >= now_utc]
-        if not future.empty:
-            next_val = future["hupx_price_eur_mwh"].iloc[0]
-            next_ts = future.index[0]
-            st.metric("Következő negyedóra ára (EUR/MWh)", f"{next_val:,.2f}", help=str(next_ts))
+        dam_future = live_hupx[(live_hupx["piac"] == "Day-Ahead (DAM)") & (live_hupx["timestamp_utc"] >= now_utc)]
+        if not dam_future.empty:
+            st.metric(
+                "Következő negyedóra DAM ára (EUR/MWh)",
+                f"{dam_future['ár'].iloc[0]:,.2f}",
+                help=str(dam_future["timestamp_utc"].iloc[0]),
+            )
         hupx_chart = (
-            alt.Chart(live_hupx.reset_index())
+            alt.Chart(live_hupx)
             .mark_line(point=True)
             .encode(
                 x=alt.X("timestamp_utc:T", title="Időpont"),
-                y=alt.Y("hupx_price_eur_mwh:Q", title="EUR/MWh"),
+                y=alt.Y("ár:Q", title="EUR/MWh"),
+                color=alt.Color("piac:N", legend=alt.Legend(title=None)),
             )
-            .properties(height=280)
+            .properties(height=300)
         )
         st.altair_chart(hupx_chart, use_container_width=True)
 
         local_now = pd.Timestamp.now(tz="Europe/Budapest")
-        has_tomorrow = (live_hupx.index.tz_convert("Europe/Budapest").date > local_now.date()).any()
+        dam_rows = live_hupx[live_hupx["piac"] == "Day-Ahead (DAM)"]
+        has_tomorrow = (dam_rows["timestamp_utc"].dt.tz_convert("Europe/Budapest").dt.date > local_now.date()).any()
         if not has_tomorrow:
-            st.info("A holnapi aukció még nem zárult le (kb. dél körül, CET) - egyelőre csak a mai/korábbi árak láthatók.")
+            st.info("A holnapi DAM aukció még nem zárult le (kb. dél körül, CET) - egyelőre csak a mai/korábbi árak láthatók.")
     else:
         st.info("Nincs élő HUPX adat.")
 except Exception as e:
