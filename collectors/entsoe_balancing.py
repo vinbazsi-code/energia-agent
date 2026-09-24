@@ -84,14 +84,23 @@ def fetch_activated_balancing_prices(process_type: str, days_back: int = DAYS_BA
     return points
 
 
+# A85 dokumentum két TimeSeries-t ad negyedóránként, 'imbalance_Price.category'
+# A04/A05 kóddal - valós adaton (2026-09-24, Krausz Tamás visszajelzése nyomán)
+# csak az A04 bizonyult következetesen plauzibilisnek (lásd entsoe_common.py
+# fejléc-kommentje) - az A05 időnként irreális kiugrásokat ad, ezért kihagyjuk.
+IMBALANCE_PRICE_VALID_CATEGORY = "A04"
+
+
 def get_live_imbalance_price(days_back: float = 1) -> list[tuple[datetime, float]]:
     """Kényelmi függvény a dashboardnak: közvetlen, adatbázis nélküli élő lekérdezés (HUF/kWh)."""
     points = fetch_imbalance_prices(days_back)
     result = []
     for ts, fields in points:
-        for field_name, value in fields.items():
-            if field_name.lower().endswith("_price.amount"):
-                result.append((ts, value / 1000))
+        if fields.get("imbalance_Price.category") != IMBALANCE_PRICE_VALID_CATEGORY:
+            continue
+        amount = fields.get("imbalance_Price.amount")
+        if isinstance(amount, float):
+            result.append((ts, amount / 1000))
     return sorted(result)
 
 
@@ -122,7 +131,11 @@ def collect(days_back: int = DAYS_BACK) -> int:
             continue
         log.info("%s: %d pont", prefix, len(points))
         for ts, fields in points:
+            if prefix == "imbalance" and fields.get("imbalance_Price.category") != IMBALANCE_PRICE_VALID_CATEGORY:
+                continue  # A05 kategória kihagyva - lásd IMBALANCE_PRICE_VALID_CATEGORY komment
             for field_name, value in fields.items():
+                if not isinstance(value, float):
+                    continue  # szöveges mezők (pl. kategória-kód) nem measurement-értékek
                 is_price = field_name.lower().endswith(PRICE_FIELD_SUFFIXES)
                 measurement_rows.append(
                     {

@@ -36,6 +36,20 @@ Validált mértékegység (2026-09-24, valós adaton): az A85 imbalance ár
 HUF/MWh-ban jön (currency_Unit.name=HUF, price_Measure_Unit.name=MWH) -
 lásd entsoe_balancing.py, ahol HUF/kWh-ra váltjuk a MAVIR-adatokkal
 való összevethetőség miatt. A85 (imbalance) adat MŰKÖDIK Magyarországra.
+
+FONTOS, kollégai (Krausz Tamás) visszajelzés alapján felfedezett csapda
+(2026-09-24): az A85 dokumentum negyedóránként KÉT külön TimeSeries-t ad
+vissza, `imbalance_Price.category` A04 és A05 kóddal (a Point-okon belül
+külön-külön mezőként). Valós adaton összevetve: A04 következetesen
+plauzibilis, a MAVIR-adattal egyező tartományú (~130-170k HUF/MWh),
+míg A05 többnyire 0, de időnként irreális kiugrásokat ad (pl. -495000,
+-173517 HUF/MWh) - ez feltehetően a 2022 előtti kétáras rendszer
+maradványa egy formai kötelező mezőként, miközben Magyarország azóta
+egyáras (b=0, s=0) módszertant használ. A entsoe_balancing.py ezért
+KIZÁRÓLAG az A04 kategóriájú pontokat használja a kiegyenlítő árhoz -
+lásd IMBALANCE_PRICE_VALID_CATEGORY. PICASSO/MARI csatlakozás után
+(2026.10.01-től) várhatóan megszűnik ez a kettősség - érdemes utána
+újra ellenőrizni, hogy még mindig szükséges-e a szűrés.
 A84 (aFRR/mFRR aktivált ár) PICASSO (A67)/MARI (A60) processType-tal
 2026-09-24-én még 0 pontot ad vissza - ez VÁRHATÓ, mert Magyarország
 csak 2026.10.01-jétől csatlakozik ezekhez a platformokhoz (lásd
@@ -162,16 +176,18 @@ def parse_timeseries_points(xml_text: str) -> list[tuple[datetime, dict]]:
 
         for position, fields in points:
             ts = interval_start + (position - 1) * resolution_td
-            numeric_fields = {}
+            parsed_fields = {}
             for k, v in fields.items():
                 if v is None:
                     continue
                 try:
-                    numeric_fields[k] = float(v)
+                    parsed_fields[k] = float(v)
                 except ValueError:
-                    continue
-            if numeric_fields:
-                results.append((ts, numeric_fields))
+                    # nem szám (pl. kategória-/státuszkód, mint 'imbalance_Price.category'=A04/A05) -
+                    # a hívónak kellhet a szűréshez, ezért szövegként megtartjuk, nem dobjuk el
+                    parsed_fields[k] = v
+            if parsed_fields:
+                results.append((ts, parsed_fields))
 
     return results
 
