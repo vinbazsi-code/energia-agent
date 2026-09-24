@@ -34,6 +34,11 @@ jobs:
       - run: sleep 5
       - run: python collectors/weather.py
 
+      - name: Stratégia-agent (LLM összefoglaló)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python strategy_agent.py
+
       - name: Adatbázis visszamentése a repóba
         run: |
           git config user.name "github-actions[bot]"
