@@ -12,6 +12,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from collectors.entsoe_balancing import get_live_imbalance_price
 from collectors.hupx_dam import get_live_prices as get_live_hupx_dam_prices
 from collectors.hupx_ida import get_live_prices as get_live_hupx_ida_prices
 from collectors.hupx_idc import get_live_prices as get_live_hupx_idc_prices
@@ -24,6 +25,86 @@ st.set_page_config(page_title="Energiakereskedési elemző", layout="wide")
 
 st.title("Energiakereskedési elemző")
 st.caption(f"Adatforrás: {DB_PATH}")
+
+
+@st.cache_data(ttl=60)
+def load_latest_metric(metric: str) -> tuple[float, str] | None:
+    """Egy adott metrika legfrissebb (bármikori) ismert értéke + időbélyege - a stálé MAVIR-adathoz kell,
+    ahol nem élő lekérdezés van, hanem a tárolt legutolsó ismert érték."""
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "SELECT value, timestamp_utc FROM measurements WHERE metric = ? "
+            "ORDER BY timestamp_utc DESC LIMIT 1",
+            (metric,),
+        )
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    return (row[0], row[1]) if row else None
+
+
+@st.cache_data(ttl=30)
+def load_live_imbalance() -> list[tuple]:
+    return get_live_imbalance_price(days_back=1)
+
+
+st.header("💰 Aktuális árak")
+st.caption(
+    "Egy pillantásra: melyik piaci ár mennyire friss. Az ENTSO-E és a HUPX élőben lekérdezve "
+    "(gyakorlatilag valós idejű), a MAVIR kiegyenlítő ár mindig ~5-6 napos csúszású - ez utóbbi "
+    "az utolsó ISMERT elszámolási érték, nem a mai állapot."
+)
+row1a, row1b = st.columns(2)
+row2a, row2b = st.columns(2)
+
+with row1a:
+    try:
+        imb = load_live_imbalance()
+        if imb:
+            ts, val = imb[-1]
+            row1a.metric("ENTSO-E imbalance ár (élő)", f"{val:,.1f} Ft/kWh", help=f"{ts.isoformat()} (UTC)")
+        else:
+            row1a.metric("ENTSO-E imbalance ár (élő)", "–")
+    except Exception as e:
+        row1a.metric("ENTSO-E imbalance ár (élő)", "hiba")
+        row1a.caption(str(e))
+
+with row1b:
+    try:
+        dam = get_live_hupx_dam_prices(days_back=0, days_forward=1)
+        now_utc = datetime.now(timezone.utc)
+        future_dam = [(t, v) for t, v in dam if t >= now_utc]
+        if future_dam:
+            ts, val = future_dam[0]
+            row1b.metric("HUPX Day-Ahead, köv. negyedóra (élő)", f"{val:,.1f} €/MWh", help=f"{ts.isoformat()} (UTC)")
+        else:
+            row1b.metric("HUPX Day-Ahead, köv. negyedóra (élő)", "–")
+    except Exception as e:
+        row1b.metric("HUPX Day-Ahead, köv. negyedóra (élő)", "hiba")
+        row1b.caption(str(e))
+
+with row2a:
+    try:
+        idc = get_live_hupx_idc_prices(days_back=1, days_forward=0)
+        if idc:
+            ts, val = idc[-1]
+            row2a.metric("HUPX Intraday, legutóbbi kereskedés (élő)", f"{val:,.1f} €/MWh", help=f"{ts.isoformat()} (UTC)")
+        else:
+            row2a.metric("HUPX Intraday, legutóbbi kereskedés (élő)", "–")
+    except Exception as e:
+        row2a.metric("HUPX Intraday, legutóbbi kereskedés (élő)", "hiba")
+        row2a.caption(str(e))
+
+with row2b:
+    latest = load_latest_metric("pozitiv_ar_huf_per_kwh")
+    if latest:
+        val, ts = latest
+        row2b.metric("MAVIR kiegyenlítő ár (utolsó ISMERT)", f"{val:,.1f} Ft/kWh", help=f"{ts} - NEM a mai állapot, ~5-6 napos csúszás!")
+    else:
+        row2b.metric("MAVIR kiegyenlítő ár (utolsó ISMERT)", "–")
+
+st.divider()
 
 st.subheader("📋 Legutóbbi stratégiajavaslat (LLM-összefoglaló)")
 try:

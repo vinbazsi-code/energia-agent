@@ -23,7 +23,10 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from entsoe_common import HU_DOMAIN, PROJECT_ROOT, fetch_documents, parse_timeseries_points, sanitize_metric_name
+_COLLECTORS_DIR = Path(__file__).resolve().parent
+if str(_COLLECTORS_DIR) not in sys.path:
+    sys.path.insert(0, str(_COLLECTORS_DIR))
+from entsoe_common import HU_DOMAIN, PROJECT_ROOT, fetch_documents, parse_timeseries_points, sanitize_metric_name  # noqa: E402
 
 sys.path.insert(0, str(PROJECT_ROOT)) if str(PROJECT_ROOT) not in sys.path else None
 import storage  # noqa: E402
@@ -79,6 +82,17 @@ def fetch_activated_balancing_prices(process_type: str, days_back: int = DAYS_BA
     for xml_text in fetch_documents(params):
         points.extend(parse_timeseries_points(xml_text))
     return points
+
+
+def get_live_imbalance_price(days_back: float = 1) -> list[tuple[datetime, float]]:
+    """Kényelmi függvény a dashboardnak: közvetlen, adatbázis nélküli élő lekérdezés (HUF/kWh)."""
+    points = fetch_imbalance_prices(days_back)
+    result = []
+    for ts, fields in points:
+        for field_name, value in fields.items():
+            if field_name.lower().endswith("_price.amount"):
+                result.append((ts, value / 1000))
+    return sorted(result)
 
 
 # Az ENTSO-E válaszban a price-mezők (pl. 'imbalance_Price.amount',
