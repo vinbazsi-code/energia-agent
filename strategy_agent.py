@@ -77,52 +77,52 @@ def _series_to_lines(series: pd.Series, unit: str, tz: str = "Europe/Budapest") 
     return "\n".join(lines)
 
 
-def gather_context(hours_forward: int = 48, hours_back: int = 72) -> str:
+def _latest_valid(wide: pd.DataFrame, metric: str, n: int) -> pd.Series:
+    """Az utolsó N ÉRVÉNYES (nem-NaN) érték egy oszlopból - FONTOS: előbb dropna, utána tail,
+    különben a ritkábban frissülő metrikák "eltűnnek" a gyakoribb metrikák időbélyegei mögött
+    (mivel `wide` minden metrika időbélyegét egy közös indexbe egyesíti)."""
+    if metric not in wide:
+        return pd.Series(dtype=float)
+    return wide[metric].dropna().tail(n)
+
+
+def _future_valid(wide: pd.DataFrame, metric: str, now: pd.Timestamp, hours_forward: int) -> pd.Series:
+    if metric not in wide:
+        return pd.Series(dtype=float)
+    s = wide[metric].dropna()
+    return s[(s.index >= now) & (s.index <= now + timedelta(hours=hours_forward))]
+
+
+def gather_context(hours_forward: int = 48) -> str:
     wide = _load_wide()
     now = pd.Timestamp.now(tz="UTC")
-    forward_end = now + timedelta(hours=hours_forward)
-    back_start = now - timedelta(hours=hours_back)
-
-    forward = wide[(wide.index >= now) & (wide.index <= forward_end)]
-    recent = wide[(wide.index >= back_start) & (wide.index <= now)]
 
     parts = [BATTERY_CONTEXT, "", f"Jelen pillanat (UTC): {now.isoformat()}", ""]
 
     parts.append("## HUPX Day-Ahead ár (EUR/MWh) - a következő ismert órákra")
-    if "hupx_dam_price_eur_mwh" in forward:
-        parts.append(_series_to_lines(forward["hupx_dam_price_eur_mwh"], "EUR/MWh"))
-    else:
-        parts.append("(nincs adat)")
+    parts.append(_series_to_lines(_future_valid(wide, "hupx_dam_price_eur_mwh", now, hours_forward), "EUR/MWh"))
     parts.append("")
 
     parts.append("## HUPX Intraday Continuous VWAP ár (EUR/MWh) - legutóbbi kereskedés")
-    if "hupx_idc_vwap_price_eur_mwh" in recent:
-        parts.append(_series_to_lines(recent["hupx_idc_vwap_price_eur_mwh"].tail(48), "EUR/MWh"))
-    else:
-        parts.append("(nincs adat)")
+    parts.append(_series_to_lines(_latest_valid(wide, "hupx_idc_vwap_price_eur_mwh", 48), "EUR/MWh"))
     parts.append("")
 
-    parts.append("## MAVIR kiegyenlítő energia egységár (HUF/kWh) - legutóbbi elszámolási adat")
-    if "pozitiv_ar_huf_per_kwh" in recent:
-        parts.append(_series_to_lines(recent["pozitiv_ar_huf_per_kwh"].tail(48), "HUF/kWh"))
-    else:
-        parts.append("(nincs adat)")
+    parts.append(
+        "## MAVIR kiegyenlítő energia egységár (HUF/kWh) - legutóbbi elszámolási adat "
+        "(FIGYELEM: ez az adatforrás jellemzően 5-6 napos csúszással érkezik, tehát ez NEM a mai állapot)"
+    )
+    parts.append(_series_to_lines(_latest_valid(wide, "pozitiv_ar_huf_per_kwh", 48), "HUF/kWh"))
     parts.append("")
 
     parts.append("## MAVIR rendszerállapot (közel élő operatív becslés, MW) - legutóbbi állapot")
-    if "rendszerallapot_realtime_mw" in recent:
-        parts.append(_series_to_lines(recent["rendszerallapot_realtime_mw"].tail(24), "MW"))
-    else:
-        parts.append("(nincs adat)")
+    parts.append(_series_to_lines(_latest_valid(wide, "rendszerallapot_realtime_mw", 24), "MW"))
     parts.append("")
 
     parts.append("## Időjárás Balassagyarmaton - a következő órákra (napsugárzás fontos a PV-termeléshez)")
-    if "weather_shortwave_radiation_w_m2" in forward:
-        parts.append("Globálsugárzás (W/m2):")
-        parts.append(_series_to_lines(forward["weather_shortwave_radiation_w_m2"], "W/m2"))
-    if "weather_temp_c" in forward:
-        parts.append("Hőmérséklet (°C):")
-        parts.append(_series_to_lines(forward["weather_temp_c"], "°C"))
+    parts.append("Globálsugárzás (W/m2):")
+    parts.append(_series_to_lines(_future_valid(wide, "weather_shortwave_radiation_w_m2", now, hours_forward), "W/m2"))
+    parts.append("Hőmérséklet (°C):")
+    parts.append(_series_to_lines(_future_valid(wide, "weather_temp_c", now, hours_forward), "°C"))
     parts.append("")
 
     return "\n".join(parts)
@@ -168,9 +168,13 @@ def call_claude(prompt: str) -> str:
     client = anthropic.Anthropic()  # az ANTHROPIC_API_KEY env változóból olvas
     response = client.messages.create(
         model=MODEL,
-        max_tokens=2000,
+        # a Sonnet 5 alapból "extended thinking"-et használ, ami levon a keretből -
+        # legyen elég hely a gondolkodásnak ÉS a tényleges szöveges válasznak is
+        max_tokens=8000,
         messages=[{"role": "user", "content": prompt}],
     )
+    if response.stop_reason == "max_tokens":
+        log.warning("A válasz a max_tokens korlátnál megszakadt - lehet, hogy csonka.")
     return "".join(block.text for block in response.content if block.type == "text")
 
 
