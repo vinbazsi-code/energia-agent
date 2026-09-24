@@ -589,6 +589,121 @@ if price_cols:
 else:
     st.info("Nincs árszint adat az eloszláshoz.")
 
+st.subheader("Negyedóránkénti mintázat (elmúlt 14 nap)")
+st.caption(
+    "Naptári negyedóránként (helyi idő, pl. mindig a 14:00-14:15-ös szeletet nézve az elmúlt 14 napban): "
+    "milyen gyakran volt jellemzően hiány/többlet ebben az időpontban, illetve átlagosan melyik piac "
+    "(MAVIR kiegyenlítő vagy HUPX day-ahead) volt kedvezőbb. FONTOS: a MAVIR kiegyenlítő ár ~5-6 napos "
+    "csúszású, ezért az ő 14 napos ablaka valójában a 20-6 nappal ezelőtti időszakot fedi le, nem a "
+    "legutóbbi napokat."
+)
+
+LOOKBACK_DAYS = 14
+_qh_window_start = pd.Timestamp.now(tz="UTC") - timedelta(days=LOOKBACK_DAYS)
+
+
+def _qh_label_series(idx: pd.DatetimeIndex) -> pd.Series:
+    local_idx = idx.tz_convert("Europe/Budapest")
+    return pd.Series(local_idx.strftime("%H:%M"), index=idx)
+
+
+if "rendszerirany_kwh" in wide:
+    ri_window = wide.loc[wide.index >= _qh_window_start, "rendszerirany_kwh"].dropna()
+else:
+    ri_window = pd.Series(dtype=float)
+
+if not ri_window.empty:
+    qh_labels = _qh_label_series(ri_window.index)
+
+    def _classify(v: float) -> str:
+        if v > 0:
+            return "Többlet (leszab)"
+        if v < 0:
+            return "Hiány (felszab)"
+        return "Kiegyensúlyozott"
+
+    ri_tmp = pd.DataFrame({"qh": qh_labels.values, "állapot": [_classify(v) for v in ri_window.values]})
+    freq_chart = (
+        alt.Chart(ri_tmp)
+        .mark_bar()
+        .encode(
+            x=alt.X("qh:O", title="Negyedóra (helyi idő)", sort=sorted(ri_tmp["qh"].unique())),
+            y=alt.Y("count():Q", stack="normalize", title="Arány", axis=alt.Axis(format="%")),
+            color=alt.Color(
+                "állapot:N",
+                scale=alt.Scale(
+                    domain=["Hiány (felszab)", "Kiegyensúlyozott", "Többlet (leszab)"],
+                    range=["#e74c3c", "#95a5a6", "#2ecc71"],
+                ),
+                legend=alt.Legend(title=None),
+            ),
+        )
+        .properties(height=300, title="Rendszerirány gyakorisága negyedóránként")
+    )
+    st.altair_chart(freq_chart, use_container_width=True)
+else:
+    st.info("Nincs elég rendszerirány adat a negyedóránkénti gyakorisághoz.")
+
+ke_window = (
+    wide.loc[wide.index >= _qh_window_start, "pozitiv_ar_huf_per_kwh"].dropna()
+    if "pozitiv_ar_huf_per_kwh" in wide
+    else pd.Series(dtype=float)
+)
+hupx_window = (
+    wide.loc[wide.index >= _qh_window_start, "hupx_dam_price_eur_mwh"].dropna()
+    if "hupx_dam_price_eur_mwh" in wide
+    else pd.Series(dtype=float)
+)
+
+if not ke_window.empty or not hupx_window.empty:
+    layers = []
+    if not ke_window.empty:
+        ke_avg = (
+            pd.DataFrame({"qh": _qh_label_series(ke_window.index).values, "átlag": ke_window.values})
+            .groupby("qh")["átlag"].mean().reset_index()
+        )
+        ke_layer = (
+            alt.Chart(ke_avg)
+            .mark_line(color="#3498db", point=True)
+            .encode(
+                x=alt.X("qh:O", title="Negyedóra (helyi idő)", sort=sorted(ke_avg["qh"].unique())),
+                y=alt.Y("átlag:Q", title="MAVIR KE átlagár (HUF/kWh)", axis=alt.Axis(titleColor="#3498db")),
+            )
+        )
+        layers.append(ke_layer)
+        cheapest = ke_avg.loc[ke_avg["átlag"].idxmin()]
+        priciest = ke_avg.loc[ke_avg["átlag"].idxmax()]
+        st.caption(
+            f"MAVIR KE: legolcsóbb negyedóra átlagosan **{cheapest['qh']}** ({cheapest['átlag']:,.1f} HUF/kWh), "
+            f"legdrágább **{priciest['qh']}** ({priciest['átlag']:,.1f} HUF/kWh)."
+        )
+    if not hupx_window.empty:
+        hupx_avg = (
+            pd.DataFrame({"qh": _qh_label_series(hupx_window.index).values, "átlag": hupx_window.values})
+            .groupby("qh")["átlag"].mean().reset_index()
+        )
+        hupx_layer = (
+            alt.Chart(hupx_avg)
+            .mark_line(color="#e67e22", point=True)
+            .encode(
+                x=alt.X("qh:O", title="Negyedóra (helyi idő)", sort=sorted(hupx_avg["qh"].unique())),
+                y=alt.Y("átlag:Q", title="HUPX DAM átlagár (EUR/MWh)", axis=alt.Axis(titleColor="#e67e22")),
+            )
+        )
+        layers.append(hupx_layer)
+        cheapest = hupx_avg.loc[hupx_avg["átlag"].idxmin()]
+        priciest = hupx_avg.loc[hupx_avg["átlag"].idxmax()]
+        st.caption(
+            f"HUPX DAM: legolcsóbb negyedóra átlagosan **{cheapest['qh']}** ({cheapest['átlag']:,.1f} EUR/MWh), "
+            f"legdrágább **{priciest['qh']}** ({priciest['átlag']:,.1f} EUR/MWh)."
+        )
+    combo_chart = alt.layer(*layers).resolve_scale(y="independent").properties(
+        height=300, title="MAVIR KE vs. HUPX DAM átlagár negyedóránként (eltérő tengelyek, más pénznem/mértékegység!)"
+    )
+    st.altair_chart(combo_chart, use_container_width=True)
+else:
+    st.info("Nincs elég ár adat a negyedóránkénti KE vs. HUPX összevetéshez.")
+
 st.subheader("Nyers adattábla")
 st.dataframe(filtered, use_container_width=True)
 
