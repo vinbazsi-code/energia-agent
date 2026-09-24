@@ -141,6 +141,45 @@ def rendszer_badge(value: float | None, convention: str) -> str:
     return ":red[🔴 **RENDSZERHIÁNY** → felszabályozás (FEL)]"
 
 
+def render_multiseries_chart(
+    df: pd.DataFrame,
+    label_map: dict,
+    *,
+    key: str,
+    value_name: str = "MW",
+    chart_type: str = "line",
+    height: int = 300,
+    title: str | None = None,
+    default_labels: list[str] | None = None,
+) -> None:
+    """Több-sorozatos vonal/oszlopdiagram, 'pipálós' (multiselect) sorozatválasztóval -
+    sok sorozatnál (5+) e nélkül átláthatatlanná válik a chart, ezért a felhasználó
+    maga választhatja ki, mit lásson egyszerre."""
+    cols = [c for c in label_map if c in df]
+    if not cols:
+        st.info("Nincs megjeleníthető sorozat.")
+        return
+    options = [label_map[c] for c in cols]
+    default = default_labels if default_labels is not None else options
+    selected = st.multiselect("Megjelenítendő sorozatok", options, default=default, key=key)
+    if not selected:
+        st.info("Válassz legalább egy sorozatot a megjelenítéshez.")
+        return
+    long_df = df[cols].reset_index().melt(id_vars="timestamp_utc", var_name="col", value_name=value_name)
+    long_df["típus"] = long_df["col"].map(label_map)
+    long_df = long_df[long_df["típus"].isin(selected)]
+    base = alt.Chart(long_df).mark_line() if chart_type == "line" else alt.Chart(long_df).mark_bar()
+    props = {"height": height}
+    if title:
+        props["title"] = title
+    chart = base.encode(
+        x=alt.X("timestamp_utc:T", title="Időpont"),
+        y=alt.Y(f"{value_name}:Q", title=value_name, stack="zero" if chart_type == "bar" else None),
+        color=alt.Color("típus:N", legend=alt.Legend(title=None)),
+    ).properties(**props)
+    st.altair_chart(chart, use_container_width=True)
+
+
 @st.cache_data(ttl=30)
 def load_live_frequency() -> pd.DataFrame:
     rows = get_live_frequency(hours_back=1)
@@ -206,17 +245,22 @@ try:
                 f"{dam_future['ár'].iloc[0]:,.2f}",
                 help=str(dam_future["timestamp_utc"].iloc[0]),
             )
-        hupx_chart = (
-            alt.Chart(live_hupx)
-            .mark_line(point=True)
-            .encode(
-                x=alt.X("timestamp_utc:T", title="Időpont"),
-                y=alt.Y("ár:Q", title="EUR/MWh"),
-                color=alt.Color("piac:N", legend=alt.Legend(title=None)),
+        markets = sorted(live_hupx["piac"].unique())
+        selected_markets = st.multiselect("Megjelenítendő piaci szegmensek", markets, default=markets, key="hupx_markets")
+        if selected_markets:
+            hupx_chart = (
+                alt.Chart(live_hupx[live_hupx["piac"].isin(selected_markets)])
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("timestamp_utc:T", title="Időpont"),
+                    y=alt.Y("ár:Q", title="EUR/MWh"),
+                    color=alt.Color("piac:N", legend=alt.Legend(title=None)),
+                )
+                .properties(height=300)
             )
-            .properties(height=300)
-        )
-        st.altair_chart(hupx_chart, use_container_width=True)
+            st.altair_chart(hupx_chart, use_container_width=True)
+        else:
+            st.info("Válassz legalább egy piaci szegmenst.")
 
         local_now = pd.Timestamp.now(tz="Europe/Budapest")
         dam_rows = live_hupx[live_hupx["piac"] == "Day-Ahead (DAM)"]
@@ -254,21 +298,22 @@ st.caption(
     "mutatja, mi hajtja az aktuális fel-/leszabályozást: automatikus aFRR, hazai aFRR, IGCC "
     "(nemzetközi csereszabályozás), és a nem automatikus (balancing) aktiválás."
 )
+ACT_LABELS = {
+    "afrr_automatikus_fel_mw": "aFRR automatikus FEL",
+    "afrr_automatikus_le_mw": "aFRR automatikus LE",
+    "hazai_afrr_automatikus_fel_mw": "Hazai aFRR FEL",
+    "hazai_afrr_automatikus_le_mw": "Hazai aFRR LE",
+    "igcc_fel_mw": "IGCC FEL",
+    "igcc_le_mw": "IGCC LE",
+    "nem_automatikus_fel_mw": "Nem automatikus FEL",
+    "nem_automatikus_le_mw": "Nem automatikus LE",
+}
 try:
     live_act = load_live_activations()
     if not live_act.empty:
-        act_long = live_act.reset_index().melt(id_vars="timestamp_utc", var_name="forrás", value_name="MW")
-        act_chart = (
-            alt.Chart(act_long)
-            .mark_bar()
-            .encode(
-                x=alt.X("timestamp_utc:T", title="Időpont"),
-                y=alt.Y("MW:Q", title="MW", stack="zero"),
-                color=alt.Color("forrás:N", legend=alt.Legend(title=None)),
-            )
-            .properties(height=300)
+        render_multiseries_chart(
+            live_act, ACT_LABELS, key="act_series", value_name="MW", chart_type="bar", height=300
         )
-        st.altair_chart(act_chart, use_container_width=True)
         st.caption(f"Legfrissebb adatpont: {live_act.index[-1]}")
     else:
         st.info("Nincs élő aktiválási adat.")
@@ -332,20 +377,7 @@ try:
             "pv_teny_netto_kereskedelmi_mw": "Tény (nettó kereskedelmi)",
             "pv_teny_netto_uzemiranyitasi_mw": "Tény (nettó üzemirányítási)",
         }
-        pv_cols = [c for c in pv_labels if c in live_pv]
-        pv_long = live_pv[pv_cols].reset_index().melt(id_vars="timestamp_utc", var_name="típus", value_name="MW")
-        pv_long["típus"] = pv_long["típus"].map(pv_labels)
-        pv_chart = (
-            alt.Chart(pv_long)
-            .mark_line()
-            .encode(
-                x=alt.X("timestamp_utc:T", title="Időpont"),
-                y=alt.Y("MW:Q", title="MW"),
-                color=alt.Color("típus:N", legend=alt.Legend(title=None)),
-            )
-            .properties(height=300)
-        )
-        st.altair_chart(pv_chart, use_container_width=True)
+        render_multiseries_chart(live_pv, pv_labels, key="pv_series", value_name="MW", chart_type="line", height=300)
     else:
         st.info("Nincs élő PV-termelési adat.")
 except Exception as e:
@@ -431,30 +463,13 @@ st.caption(
 try:
     live_tt = load_live_tartalekok()
     if not live_tt.empty:
-        ver_cols = [
-            c
-            for c in ("ver_igeny_fel_burkologorbe_mw", "ver_igeny_le_burkologorbe_mw", "ver_igeny_netto_mw")
-            if c in live_tt
-        ]
-        if ver_cols:
-            ver_labels = {
-                "ver_igeny_fel_burkologorbe_mw": "VER igény FEL (burkológörbe)",
-                "ver_igeny_le_burkologorbe_mw": "VER igény LE (burkológörbe)",
-                "ver_igeny_netto_mw": "VER igény - nettó",
-            }
-            ver_long = live_tt[ver_cols].reset_index().melt(id_vars="timestamp_utc", var_name="típus", value_name="MW")
-            ver_long["típus"] = ver_long["típus"].map(ver_labels)
-            ver_chart = (
-                alt.Chart(ver_long)
-                .mark_line()
-                .encode(
-                    x=alt.X("timestamp_utc:T", title="Időpont"),
-                    y=alt.Y("MW:Q", title="MW"),
-                    color=alt.Color("típus:N", legend=alt.Legend(title=None)),
-                )
-                .properties(height=280, title="Hazai rendszer szabályozási igénye")
-            )
-            st.altair_chart(ver_chart, use_container_width=True)
+        ver_labels = {
+            "ver_igeny_fel_burkologorbe_mw": "VER igény FEL (burkológörbe)",
+            "ver_igeny_le_burkologorbe_mw": "VER igény LE (burkológörbe)",
+            "ver_igeny_netto_mw": "VER igény - nettó",
+        }
+        st.caption("Hazai rendszer szabályozási igénye")
+        render_multiseries_chart(live_tt, ver_labels, key="ver_series", value_name="MW", chart_type="line", height=280)
 
         ke_labels = {
             "ke_belfoldi_afrr_fel_mw": "aFRR FEL",
@@ -466,23 +481,8 @@ try:
             "ke_rir_osszesen_fel_mw": "RIR FEL",
             "ke_rir_osszesen_le_mw": "RIR LE",
         }
-        ke_cols = [c for c in ke_labels if c in live_tt]
-        if ke_cols:
-            ke_long = live_tt[ke_cols].reset_index().melt(id_vars="timestamp_utc", var_name="típus", value_name="MW")
-            ke_long["típus"] = ke_long["típus"].map(ke_labels)
-            ke_chart = (
-                alt.Chart(ke_long)
-                .mark_bar()
-                .encode(
-                    x=alt.X("timestamp_utc:T", title="Időpont"),
-                    y=alt.Y("MW:Q", title="MW", stack="zero"),
-                    color=alt.Color("típus:N", legend=alt.Legend(title=None)),
-                )
-                .properties(height=280, title="Kiegyenlítő célú belföldi szabályozás forrásonként (FEL/LE)")
-            )
-            st.altair_chart(ke_chart, use_container_width=True)
-        if not ver_cols and not ke_cols:
-            st.info("Nincs élő szabályozási tartalék adat.")
+        st.caption("Kiegyenlítő célú belföldi szabályozás forrásonként (FEL/LE)")
+        render_multiseries_chart(live_tt, ke_labels, key="ke_series", value_name="MW", chart_type="bar", height=280)
     else:
         st.info("Nincs élő szabályozási tartalék adat.")
 except Exception as e:
