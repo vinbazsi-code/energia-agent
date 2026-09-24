@@ -24,6 +24,8 @@ jobs:
       - run: sleep 5
       - run: python collectors/mavir_rendszerallapot_realtime.py
       - run: sleep 5
+      - run: python collectors/mavir_aktivalas.py
+      - run: sleep 5
       - run: python collectors/mavir_frekvencia.py
       - run: sleep 5
       - run: python collectors/hupx_dam.py

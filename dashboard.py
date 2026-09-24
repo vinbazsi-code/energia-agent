@@ -15,6 +15,7 @@ import streamlit as st
 from collectors.hupx_dam import get_live_prices as get_live_hupx_dam_prices
 from collectors.hupx_ida import get_live_prices as get_live_hupx_ida_prices
 from collectors.hupx_idc import get_live_prices as get_live_hupx_idc_prices
+from collectors.mavir_aktivalas import get_live_activations
 from collectors.mavir_frekvencia import get_live_frequency
 from collectors.mavir_rendszerallapot_realtime import get_live_rendszerallapot
 from storage import DB_PATH, connect, get_latest_insight
@@ -70,6 +71,16 @@ def load_live_rendszerallapot() -> pd.DataFrame:
     ra_df = pd.DataFrame(rows, columns=["timestamp_utc", "rendszerallapot_mw"])
     ra_df["timestamp_utc"] = pd.to_datetime(ra_df["timestamp_utc"], utc=True)
     return ra_df.set_index("timestamp_utc")
+
+
+@st.cache_data(ttl=60)
+def load_live_activations() -> pd.DataFrame:
+    rows = get_live_activations(hours_back=6)
+    act_df = pd.DataFrame([{"timestamp_utc": ts, **values} for ts, values in rows])
+    if act_df.empty:
+        return act_df
+    act_df["timestamp_utc"] = pd.to_datetime(act_df["timestamp_utc"], utc=True)
+    return act_df.set_index("timestamp_utc").sort_index()
 
 
 @st.cache_data(ttl=300)
@@ -150,6 +161,35 @@ try:
         st.info("Nincs élő rendszerállapot adat.")
 except Exception as e:
     st.error(f"Nem sikerült lekérni az élő rendszerállapotot: {e}")
+
+st.divider()
+
+st.subheader("Élő aktiválás - kiegyenlítő szabályozás forrásonként (MW)")
+st.caption(
+    "Élőben lekérve a MAVIR-tól (rtdwweb, chart 11326), nem az adatbázisból - forrásonkénti bontásban "
+    "mutatja, mi hajtja az aktuális fel-/leszabályozást: automatikus aFRR, hazai aFRR, IGCC "
+    "(nemzetközi csereszabályozás), és a nem automatikus (balancing) aktiválás."
+)
+try:
+    live_act = load_live_activations()
+    if not live_act.empty:
+        act_long = live_act.reset_index().melt(id_vars="timestamp_utc", var_name="forrás", value_name="MW")
+        act_chart = (
+            alt.Chart(act_long)
+            .mark_bar()
+            .encode(
+                x=alt.X("timestamp_utc:T", title="Időpont"),
+                y=alt.Y("MW:Q", title="MW", stack="zero"),
+                color=alt.Color("forrás:N", legend=alt.Legend(title=None)),
+            )
+            .properties(height=300)
+        )
+        st.altair_chart(act_chart, use_container_width=True)
+        st.caption(f"Legfrissebb adatpont: {live_act.index[-1]}")
+    else:
+        st.info("Nincs élő aktiválási adat.")
+except Exception as e:
+    st.error(f"Nem sikerült lekérni az élő aktiválási adatot: {e}")
 
 st.divider()
 
