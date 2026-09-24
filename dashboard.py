@@ -18,7 +18,10 @@ from collectors.hupx_ida import get_live_prices as get_live_hupx_ida_prices
 from collectors.hupx_idc import get_live_prices as get_live_hupx_idc_prices
 from collectors.mavir_aktivalas import get_live_activations
 from collectors.mavir_frekvencia import get_live_frequency
+from collectors.mavir_pv_termeles import get_live_pv
 from collectors.mavir_rendszerallapot_realtime import get_live_rendszerallapot
+from collectors.mavir_szabalyozasi_tartalekok import get_live_tartalekok
+from collectors.mavir_tarolok import get_live_tarolok
 from storage import DB_PATH, connect, get_latest_insight
 
 st.set_page_config(page_title="Energiakereskedési elemző", layout="wide")
@@ -298,6 +301,192 @@ try:
         st.info("Nincs élő frekvencia adat.")
 except Exception as e:
     st.error(f"Nem sikerült lekérni az élő frekvenciát: {e}")
+
+st.divider()
+
+
+@st.cache_data(ttl=300)
+def load_live_pv() -> pd.DataFrame:
+    rows = get_live_pv(hours_back=48)
+    pv_df = pd.DataFrame([{"timestamp_utc": ts, **values} for ts, values in rows])
+    if pv_df.empty:
+        return pv_df
+    pv_df["timestamp_utc"] = pd.to_datetime(pv_df["timestamp_utc"], utc=True)
+    return pv_df.set_index("timestamp_utc").sort_index()
+
+
+st.subheader("☀️ Ipari PV-termelés (élő, országos)")
+st.caption(
+    "Élőben lekérve a MAVIR-tól (rtdwweb, chart 11838) - az ÖSSZES hazai ipari naperőmű becsült "
+    "(dayahead/intraday/aktuális) és tényleges termelése, nem csak a Balassagyarmat-i parkoké. "
+    "Csak irányadó jelzés arra, hogy a piaci PV-termelés \"jól fest-e\" - nem helyettesíti a helyi "
+    "időjárás-alapú becslést."
+)
+try:
+    live_pv = load_live_pv()
+    if not live_pv.empty:
+        pv_labels = {
+            "pv_becsult_dayahead_mw": "Becsült (dayahead)",
+            "pv_becsult_intraday_mw": "Becsült (intraday)",
+            "pv_becsult_aktualis_mw": "Becsült (aktuális)",
+            "pv_teny_netto_kereskedelmi_mw": "Tény (nettó kereskedelmi)",
+            "pv_teny_netto_uzemiranyitasi_mw": "Tény (nettó üzemirányítási)",
+        }
+        pv_cols = [c for c in pv_labels if c in live_pv]
+        pv_long = live_pv[pv_cols].reset_index().melt(id_vars="timestamp_utc", var_name="típus", value_name="MW")
+        pv_long["típus"] = pv_long["típus"].map(pv_labels)
+        pv_chart = (
+            alt.Chart(pv_long)
+            .mark_line()
+            .encode(
+                x=alt.X("timestamp_utc:T", title="Időpont"),
+                y=alt.Y("MW:Q", title="MW"),
+                color=alt.Color("típus:N", legend=alt.Legend(title=None)),
+            )
+            .properties(height=300)
+        )
+        st.altair_chart(pv_chart, use_container_width=True)
+    else:
+        st.info("Nincs élő PV-termelési adat.")
+except Exception as e:
+    st.error(f"Nem sikerült lekérni az élő PV-termelést: {e}")
+
+st.divider()
+
+
+@st.cache_data(ttl=300)
+def load_live_tarolok() -> pd.DataFrame:
+    rows = get_live_tarolok(hours_back=48)
+    tar_df = pd.DataFrame([{"timestamp_utc": ts, **values} for ts, values in rows])
+    if tar_df.empty:
+        return tar_df
+    tar_df["timestamp_utc"] = pd.to_datetime(tar_df["timestamp_utc"], utc=True)
+    return tar_df.set_index("timestamp_utc").sort_index()
+
+
+st.subheader("🔋 MAVIR-nak megfigyelhető tárolók energiaforgalmazása (élő, országos)")
+st.caption(
+    "Élőben lekérve a MAVIR-tól (rtdwweb, chart 22361) - az ÖSSZES MAVIR-nak látható energiatároló "
+    "aggregált töltés/kisütés teljesítménye, NEM a saját Balassagyarmat-i akkumulátoroké. "
+    "Referencia/benchmark: mutatja, mikor tölt/süt ki a piac többi tárolója - segíthet megítélni, "
+    "hogy a saját KÁT-stratégia összhangban van-e a piaci mintázattal."
+)
+try:
+    live_tarolok = load_live_tarolok()
+    if not live_tarolok.empty:
+        tar_labels = {
+            "tarolo_teny_kitarolas_mw": "Tény kitárolás",
+            "tarolo_teny_betarolas_mw": "Tény betárolás",
+        }
+        tar_cols = [c for c in tar_labels if c in live_tarolok]
+        if tar_cols:
+            tar_long = live_tarolok[tar_cols].reset_index().melt(
+                id_vars="timestamp_utc", var_name="típus", value_name="MW"
+            )
+            tar_long["típus"] = tar_long["típus"].map(tar_labels)
+            tar_chart = (
+                alt.Chart(tar_long)
+                .mark_area(opacity=0.6)
+                .encode(
+                    x=alt.X("timestamp_utc:T", title="Időpont"),
+                    y=alt.Y("MW:Q", title="MW", stack=None),
+                    color=alt.Color(
+                        "típus:N",
+                        scale=alt.Scale(
+                            domain=["Tény kitárolás", "Tény betárolás"],
+                            range=["#2ecc71", "#e74c3c"],
+                        ),
+                        legend=alt.Legend(title=None),
+                    ),
+                )
+                .properties(height=300)
+            )
+            st.altair_chart(tar_chart, use_container_width=True)
+        else:
+            st.info("Nincs élő tény kitárolás/betárolás adat.")
+    else:
+        st.info("Nincs élő tárolói adat.")
+except Exception as e:
+    st.error(f"Nem sikerült lekérni az élő tárolói adatot: {e}")
+
+st.divider()
+
+
+@st.cache_data(ttl=300)
+def load_live_tartalekok() -> pd.DataFrame:
+    rows = get_live_tartalekok(hours_back=48)
+    tt_df = pd.DataFrame([{"timestamp_utc": ts, **values} for ts, values in rows])
+    if tt_df.empty:
+        return tt_df
+    tt_df["timestamp_utc"] = pd.to_datetime(tt_df["timestamp_utc"], utc=True)
+    return tt_df.set_index("timestamp_utc").sort_index()
+
+
+st.subheader("⚖️ Kiegyenlítő és nem kiegyenlítő célú szabályozási tartalékok (élő, országos)")
+st.caption(
+    "Élőben lekérve a MAVIR-tól (rtdwweb, chart 1000726) - a hazai rendszer (VER) teljes "
+    "szabályozási igénye (burkológörbe FEL/LE + nettó), illetve hogy ezt milyen forrásból "
+    "(belföldi aFRR, mFRR SA/DA, RIR) fedezik kiegyenlítő céllal. Országos aggregátum."
+)
+try:
+    live_tt = load_live_tartalekok()
+    if not live_tt.empty:
+        ver_cols = [
+            c
+            for c in ("ver_igeny_fel_burkologorbe_mw", "ver_igeny_le_burkologorbe_mw", "ver_igeny_netto_mw")
+            if c in live_tt
+        ]
+        if ver_cols:
+            ver_labels = {
+                "ver_igeny_fel_burkologorbe_mw": "VER igény FEL (burkológörbe)",
+                "ver_igeny_le_burkologorbe_mw": "VER igény LE (burkológörbe)",
+                "ver_igeny_netto_mw": "VER igény - nettó",
+            }
+            ver_long = live_tt[ver_cols].reset_index().melt(id_vars="timestamp_utc", var_name="típus", value_name="MW")
+            ver_long["típus"] = ver_long["típus"].map(ver_labels)
+            ver_chart = (
+                alt.Chart(ver_long)
+                .mark_line()
+                .encode(
+                    x=alt.X("timestamp_utc:T", title="Időpont"),
+                    y=alt.Y("MW:Q", title="MW"),
+                    color=alt.Color("típus:N", legend=alt.Legend(title=None)),
+                )
+                .properties(height=280, title="Hazai rendszer szabályozási igénye")
+            )
+            st.altair_chart(ver_chart, use_container_width=True)
+
+        ke_labels = {
+            "ke_belfoldi_afrr_fel_mw": "aFRR FEL",
+            "ke_belfoldi_afrr_le_mw": "aFRR LE",
+            "ke_belfoldi_mfrr_sa_fel_mw": "mFRR SA FEL",
+            "ke_belfoldi_mfrr_sa_le_mw": "mFRR SA LE",
+            "ke_belfoldi_mfrr_da_fel_mw": "mFRR DA FEL",
+            "ke_belfoldi_mfrr_da_le_mw": "mFRR DA LE",
+            "ke_rir_osszesen_fel_mw": "RIR FEL",
+            "ke_rir_osszesen_le_mw": "RIR LE",
+        }
+        ke_cols = [c for c in ke_labels if c in live_tt]
+        if ke_cols:
+            ke_long = live_tt[ke_cols].reset_index().melt(id_vars="timestamp_utc", var_name="típus", value_name="MW")
+            ke_long["típus"] = ke_long["típus"].map(ke_labels)
+            ke_chart = (
+                alt.Chart(ke_long)
+                .mark_bar()
+                .encode(
+                    x=alt.X("timestamp_utc:T", title="Időpont"),
+                    y=alt.Y("MW:Q", title="MW", stack="zero"),
+                    color=alt.Color("típus:N", legend=alt.Legend(title=None)),
+                )
+                .properties(height=280, title="Kiegyenlítő célú belföldi szabályozás forrásonként (FEL/LE)")
+            )
+            st.altair_chart(ke_chart, use_container_width=True)
+        if not ver_cols and not ke_cols:
+            st.info("Nincs élő szabályozási tartalék adat.")
+    else:
+        st.info("Nincs élő szabályozási tartalék adat.")
+except Exception as e:
+    st.error(f"Nem sikerült lekérni az élő szabályozási tartalék adatot: {e}")
 
 st.divider()
 

@@ -35,6 +35,12 @@ jobs:
       - run: python collectors/hupx_ida.py
       - run: sleep 5
       - run: python collectors/weather.py
+      - run: sleep 5
+      - run: python collectors/mavir_pv_termeles.py
+      - run: sleep 5
+      - run: python collectors/mavir_tarolok.py
+      - run: sleep 5
+      - run: python collectors/mavir_szabalyozasi_tartalekok.py
 
       - name: ENTSO-E kiegyenlítő ár (PICASSO/MARI keresztellenőrzés)
         env:
