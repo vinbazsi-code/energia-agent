@@ -34,6 +34,11 @@ jobs:
       - run: sleep 5
       - run: python collectors/weather.py
 
+      - name: ENTSO-E kiegyenlítő ár (PICASSO/MARI keresztellenőrzés)
+        env:
+          ENTSOE_API_TOKEN: ${{ secrets.ENTSOE_API_TOKEN }}
+        run: python collectors/entsoe_balancing.py
+
       - name: Stratégia-agent (LLM összefoglaló)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -339,6 +339,17 @@ if price_cols:
 else:
     st.info("Nincs árszint adat ebben az időszakban.")
 
+st.subheader("MAVIR vs. ENTSO-E imbalance ár (HUF/kWh) - keresztellenőrzés")
+st.caption(
+    "A MAVIR pozitív egységár és az ENTSO-E Transparency Platform-ról lekért imbalance ár "
+    "összevetése - eltérés esetén valamelyik adatforrás/módszertan hibás vagy máshogy definiált."
+)
+entsoe_cols = [c for c in ("pozitiv_ar_huf_per_kwh", "imbalance_imbalance_price_amount") if c in filtered]
+if len(entsoe_cols) >= 1 and "imbalance_imbalance_price_amount" in filtered:
+    st.line_chart(filtered[entsoe_cols])
+else:
+    st.info("Nincs ENTSO-E imbalance ár adat ebben az időszakban.")
+
 st.subheader("Időjárás - Balassagyarmat (napsugárzás, hőmérséklet)")
 st.caption(
     "Open-Meteo (ingyenes, API-kulcs nélküli) előrejelzés/mért adat a napelempark-portfólió "

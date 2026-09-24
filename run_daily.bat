@@ -14,4 +14,6 @@ timeout /t 5 >nul
 timeout /t 5 >nul
 ".venv\Scripts\python.exe" "collectors\weather.py" >> "logs\run_daily_stdout.log" 2>&1
 timeout /t 5 >nul
+".venv\Scripts\python.exe" "collectors\entsoe_balancing.py" >> "logs\run_daily_stdout.log" 2>&1
+timeout /t 5 >nul
 ".venv\Scripts\python.exe" "strategy_agent.py" >> "logs\run_daily_stdout.log" 2>&1

@@ -1,10 +1,10 @@
 """ENTSO-E kiegyenlítő/szabályozási energia gyűjtő - Magyarország.
 
-MÉG NEM ÉLESÍTETT, VALÓS ADATON NEM TESZTELT VÁZ - a felhasználó API
-tokenjére vár (lásd collectors/entsoe_common.py fejléce a regisztrációs
-folyamatért). Amint van érvényes ENTSOE_API_TOKEN környezeti változó,
-ez a szkript kipróbálható és a szükséges finomítások (mezőnevek,
-metrika-elnevezések) elvégezhetők a valós válasz alapján.
+ÉLESÍTVE ÉS VALÓS ADATON VALIDÁLVA (2026-09-24). Az imbalance ár (A85)
+működik és plauzibilis (HUF/kWh, ua. tartomány mint a MAVIR-adatnál).
+A PICASSO (A67)/MARI (A60) aktivált ár (A84) egyelőre 0 pontot ad -
+ez VÁRHATÓ, mert Magyarország csak 2026.10.01-jétől csatlakozik ezekhez
+a platformokhoz, október 1. után érdemes újra ellenőrizni.
 
 Lekérdezi Magyarországra (10YHU-MAVIR----U):
     - A85 Imbalance prices (kiegyenlítő energia egységár, ENTSO-E oldalon)
@@ -23,7 +23,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from entsoe_common import HU_DOMAIN, PROJECT_ROOT, fetch_xml, parse_timeseries_points, sanitize_metric_name
+from entsoe_common import HU_DOMAIN, PROJECT_ROOT, fetch_documents, parse_timeseries_points, sanitize_metric_name
 
 sys.path.insert(0, str(PROJECT_ROOT)) if str(PROJECT_ROOT) not in sys.path else None
 import storage  # noqa: E402
@@ -62,8 +62,10 @@ def fetch_imbalance_prices(days_back: int = DAYS_BACK) -> list[tuple[datetime, d
         "controlArea_Domain": HU_DOMAIN,
         **_period_params(days_back),
     }
-    xml_text = fetch_xml(params)
-    return parse_timeseries_points(xml_text)
+    points = []
+    for xml_text in fetch_documents(params):
+        points.extend(parse_timeseries_points(xml_text))
+    return points
 
 
 def fetch_activated_balancing_prices(process_type: str, days_back: int = DAYS_BACK) -> list[tuple[datetime, dict]]:
@@ -73,8 +75,18 @@ def fetch_activated_balancing_prices(process_type: str, days_back: int = DAYS_BA
         "controlArea_Domain": HU_DOMAIN,
         **_period_params(days_back),
     }
-    xml_text = fetch_xml(params)
-    return parse_timeseries_points(xml_text)
+    points = []
+    for xml_text in fetch_documents(params):
+        points.extend(parse_timeseries_points(xml_text))
+    return points
+
+
+# Az ENTSO-E válaszban a price-mezők (pl. 'imbalance_Price.amount',
+# feltehetően 'activation_Price.amount' is A84-nél) HUF/MWh-ban jönnek
+# (currency_Unit.name=HUF, price_Measure_Unit.name=MWH - ellenőrizve
+# valós adaton 2026-09-24-én) - HUF/kWh-ra váltjuk a MAVIR-adatokkal
+# való összevethetőség miatt.
+PRICE_FIELD_SUFFIXES = ("_price.amount",)
 
 
 def collect(days_back: int = DAYS_BACK) -> int:
@@ -97,6 +109,7 @@ def collect(days_back: int = DAYS_BACK) -> int:
         log.info("%s: %d pont", prefix, len(points))
         for ts, fields in points:
             for field_name, value in fields.items():
+                is_price = field_name.lower().endswith(PRICE_FIELD_SUFFIXES)
                 measurement_rows.append(
                     {
                         "timestamp_utc": ts.isoformat(),
@@ -104,8 +117,8 @@ def collect(days_back: int = DAYS_BACK) -> int:
                         "scope": "system",
                         "asset_id": "",
                         "metric": sanitize_metric_name(prefix, field_name),
-                        "value": value,
-                        "unit": "",  # a mezőnév tartalmazza, mit jelent (ár/mennyiség) - finomítandó valós adaton
+                        "value": value / 1000 if is_price else value,
+                        "unit": "HUF/kWh" if is_price else "",
                         "collected_at": collected_iso,
                     }
                 )

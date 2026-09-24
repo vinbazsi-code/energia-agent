@@ -1,11 +1,10 @@
 """Közös segédfüggvények az ENTSO-E Transparency Platform RESTful API-hoz.
 
-FONTOS - MÉG NINCS ÉLESÍTVE / NEM TESZTELT: ehhez a felhasználónak előbb
-regisztrálnia kell a transparency.entsoe.eu-n, emailt küldenie a
-transparency@entsoe.eu címre ("Restful API access" tárggyal), és a
-jóváhagyás után (kb. 3 munkanap) az Account Settings alatt generálnia
-egy security tokent. Amíg ez nincs meg, ez a modul csak a dokumentáció
-alapján megírt, valós adaton még nem kipróbált kódváz.
+ÉLESÍTVE ÉS VALÓS ADATON VALIDÁLVA (2026-09-24). A használathoz egy
+ingyenes, de regisztrációhoz kötött security token kell (lásd
+transparency.entsoe.eu, email a transparency@entsoe.eu címre "Restful
+API access" tárggyal, kb. 3 munkanapos jóváhagyás, utána Account
+Settings alatt tokent generálni).
 
 API alap: https://web-api.tp.entsoe.eu/api
 A token SOSEM kerül a kódba/git-be - a ENTSOE_API_TOKEN környezeti
@@ -30,11 +29,25 @@ businessType:
     A97 = mFRR
 
 A válasz XML (IEC 62325 market document), nem JSON - lásd parse_timeseries_points().
+Nagyobb/több dokumentumos válasznál a szerver ZIP-be csomagolva küldi az
+XML(eke)t - ezt a fetch_documents() automatikusan kicsomagolja.
+
+Validált mértékegység (2026-09-24, valós adaton): az A85 imbalance ár
+HUF/MWh-ban jön (currency_Unit.name=HUF, price_Measure_Unit.name=MWH) -
+lásd entsoe_balancing.py, ahol HUF/kWh-ra váltjuk a MAVIR-adatokkal
+való összevethetőség miatt. A85 (imbalance) adat MŰKÖDIK Magyarországra.
+A84 (aFRR/mFRR aktivált ár) PICASSO (A67)/MARI (A60) processType-tal
+2026-09-24-én még 0 pontot ad vissza - ez VÁRHATÓ, mert Magyarország
+csak 2026.10.01-jétől csatlakozik ezekhez a platformokhoz (lásd
+mavir.hu "MARI-PICASSO csatlakozás" hírek) - október 1. után érdemes
+újra tesztelni.
 """
 
+import io
 import os
 import re
 import sys
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from xml.etree import ElementTree
@@ -71,14 +84,29 @@ def get_token() -> str:
     return token
 
 
-def fetch_xml(params: dict) -> str:
-    """Egy ENTSO-E API hívás, a securityTokent automatikusan hozzáadva."""
+def fetch_documents(params: dict) -> list[str]:
+    """Egy ENTSO-E API hívás, a securityTokent automatikusan hozzáadva.
+
+    Az ENTSO-E válasza néha sima XML, néha (jellemzően több/nagyobb
+    dokumentumnál) egy ZIP-be csomagolt XML-eket ad vissza - ez a
+    függvény mindkét esetet kezeli, és mindig a benne található
+    XML-dokumentum(ok) szövegét adja vissza listaként.
+    """
     token = get_token()
     query_params = {**params, "securityToken": token}
     query = "&".join(f"{k}={v}" for k, v in query_params.items())
     url = f"{API_BASE}?{query}"
     resp = get_with_retry(url, headers={"User-Agent": USER_AGENT}, timeout=30)
-    return resp.text
+
+    if resp.content[:2] == b"PK":  # ZIP magic bytes
+        docs = []
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            for name in zf.namelist():
+                if name.lower().endswith(".xml"):
+                    docs.append(zf.read(name).decode("utf-8"))
+        return docs
+
+    return [resp.text]
 
 
 def _strip_ns(tag: str) -> str:
