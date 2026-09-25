@@ -472,7 +472,7 @@ try:
             "ver_igeny_netto_mw": "VER igény - nettó",
         }
         st.caption("Hazai rendszer szabályozási igénye")
-        render_multiseries_chart(live_tt, ver_labels, key="ver_series", value_name="MW", chart_type="line", height=280)
+        render_multiseries_chart(live_tt, ver_labels, key="ver_series", value_name="MW", chart_type="bar", height=280)
 
         ke_labels = {
             "ke_belfoldi_afrr_fel_mw": "aFRR FEL",
