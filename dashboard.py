@@ -17,10 +17,13 @@ from collectors.hupx_dam import get_live_prices as get_live_hupx_dam_prices
 from collectors.hupx_ida import get_live_prices as get_live_hupx_ida_prices
 from collectors.hupx_idc import get_live_prices as get_live_hupx_idc_prices
 from collectors.mavir_aktivalas import get_live_activations
+from collectors.entsoe_outages import get_live_outages
 from collectors.mavir_frekvencia import get_live_frequency
 from collectors.mavir_pv_termeles import get_live_pv
 from collectors.mavir_rendszerallapot_realtime import get_live_rendszerallapot
+from collectors.mavir_rendszerterheles import get_live_rendszerterheles
 from collectors.mavir_szabalyozasi_tartalekok import get_live_tartalekok
+from collectors.mavir_szeltermeles import get_live_szel
 from collectors.mavir_tarolok import get_live_tarolok
 from storage import DB_PATH, connect, get_latest_insight
 
@@ -487,6 +490,170 @@ try:
         st.info("Nincs élő szabályozási tartalék adat.")
 except Exception as e:
     st.error(f"Nem sikerült lekérni az élő szabályozási tartalék adatot: {e}")
+
+st.divider()
+
+
+@st.cache_data(ttl=300)
+def load_live_rendszerterheles() -> pd.DataFrame:
+    rows = get_live_rendszerterheles(hours_back=48)
+    df = pd.DataFrame([{"timestamp_utc": ts, **values} for ts, values in rows])
+    if df.empty:
+        return df
+    df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True)
+    return df.set_index("timestamp_utc").sort_index()
+
+
+st.subheader("⚡ Rendszerterhelés - terv és tény (élő, országos)")
+st.caption(
+    "Élőben lekérve a MAVIR-tól (rtdwweb, chart 7678) - a teljes magyar rendszer fogyasztása. "
+    "A termeléssel (nap+szél, lásd lejjebb) együtt határozza meg a rendszer szűkösségét/"
+    "túlkínálatát: magas terhelés + alacsony megújuló termelés tipikusan magas árat és "
+    "felszabályozási igényt jelent. A 'dayahead becslés' oszlopok ELŐRETEKINTŐ jelzést adnak."
+)
+try:
+    live_load = load_live_rendszerterheles()
+    if not live_load.empty:
+        load_labels = {
+            "rendszerterheles_brutto_teny_mw": "Bruttó tény",
+            "rendszerterheles_brutto_becsult_dayahead_mw": "Bruttó becslés (dayahead)",
+            "rendszerterheles_brutto_hitelesitett_teny_mw": "Bruttó hitelesített tény",
+            "rendszerterheles_brutto_terv_mw": "Bruttó terv",
+            "rendszerterheles_netto_mw": "Nettó",
+            "rendszerterheles_netto_terv_mw": "Nettó terv",
+            "rendszerterheles_netto_becsult_dayahead_mw": "Nettó becslés (dayahead)",
+            "rendszerterheles_netto_teny_uzemiranyitasi_mw": "Nettó tény (üzemirányítási)",
+            "rendszerterheles_netto_teny_elszamolasi_mw": "Nettó tény (elszámolási)",
+            "rendszertermeles_netto_terv_mw": "Nettó rendszertermelés terv",
+        }
+        render_multiseries_chart(
+            live_load,
+            load_labels,
+            key="load_series",
+            value_name="MW",
+            chart_type="line",
+            height=300,
+            default_labels=["Bruttó tény", "Bruttó becslés (dayahead)"],
+        )
+    else:
+        st.info("Nincs élő rendszerterhelés adat.")
+except Exception as e:
+    st.error(f"Nem sikerült lekérni az élő rendszerterhelést: {e}")
+
+st.divider()
+
+
+@st.cache_data(ttl=300)
+def load_live_szel() -> pd.DataFrame:
+    rows = get_live_szel(hours_back=48)
+    df = pd.DataFrame([{"timestamp_utc": ts, **values} for ts, values in rows])
+    if df.empty:
+        return df
+    df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True)
+    return df.set_index("timestamp_utc").sort_index()
+
+
+st.subheader("🌬️ Ipari szél-termelés (élő, országos)")
+st.caption(
+    "Élőben lekérve a MAVIR-tól (rtdwweb, chart 11840) - az ÖSSZES hazai ipari szélerőmű becsült "
+    "és tényleges termelése, nem csak a Balassagyarmat-i parkoké. A nap- és szélenergia EGYÜTT adja "
+    "a megújuló-túlkínálat és a negatív/alacsony árak kockázatának jelzését."
+)
+try:
+    live_szel = load_live_szel()
+    if not live_szel.empty:
+        szel_labels = {
+            "szel_becsult_dayahead_mw": "Becsült (dayahead)",
+            "szel_becsult_intraday_mw": "Becsült (intraday)",
+            "szel_becsult_aktualis_mw": "Becsült (aktuális)",
+            "szel_teny_netto_kereskedelmi_mw": "Tény (nettó kereskedelmi)",
+            "szel_teny_netto_uzemiranyitasi_mw": "Tény (nettó üzemirányítási)",
+            "szel_teny_brutto_uzemiranyitasi_mw": "Tény (bruttó üzemirányítási)",
+            "szel_teny_brutto_uzemiranyitasi_1p_mw": "Tény (bruttó üzemirányítási, 1p)",
+        }
+        render_multiseries_chart(
+            live_szel,
+            szel_labels,
+            key="szel_series",
+            value_name="MW",
+            chart_type="line",
+            height=300,
+            default_labels=["Becsült (dayahead)", "Tény (bruttó üzemirányítási)"],
+        )
+    else:
+        st.info("Nincs élő szél-termelési adat.")
+except Exception as e:
+    st.error(f"Nem sikerült lekérni az élő szél-termelést: {e}")
+
+st.divider()
+
+
+@st.cache_data(ttl=300)
+def load_live_outages_df() -> pd.DataFrame:
+    events = get_live_outages(days_back=3, days_forward=7)
+    df = pd.DataFrame(events)
+    if df.empty:
+        return df
+    df = df[df["unavailable_mw"].notna()]
+    df["start"] = pd.to_datetime(df["start"], utc=True)
+    df["end"] = pd.to_datetime(df["end"], utc=True)
+    return df
+
+
+st.subheader("🔧 Erőmű-üzemzavarok és tervezett karbantartások (ENTSO-E REMIT)")
+st.caption(
+    "Magyar erőművek bejelentett kiesései - a NEM TERVEZETT kiesés azonnali rendszerszintű "
+    "szűkösséget, hirtelen árugrást okozhat; a TERVEZETT karbantartás néhány nappal előre ismert, "
+    "előretekintő jelzésként is használható. Ez az egyetlen forrás a rendszerben, ami az "
+    "árváltozás OKÁRA is rávilágít, nem csak a következményére."
+)
+try:
+    live_outages = load_live_outages_df()
+    if not live_outages.empty:
+        now_utc = pd.Timestamp.now(tz="UTC")
+        biz_labels = {"A53": "Tervezett karbantartás", "A54": "Nem tervezett kiesés"}
+        live_outages["típus"] = live_outages["business_type"].map(biz_labels).fillna(live_outages["business_type"])
+        live_outages["aktív"] = (live_outages["start"] <= now_utc) & (live_outages["end"] >= now_utc)
+
+        # az ENTSO-E ugyanazt a fizikai kiesést gyakran több, egymást átfedő
+        # (pl. naponta frissített végdátummal újraközölt) bejelentésben adja vissza -
+        # az "aktív most" összesítéshez ezért erőművenként csak egyet veszünk figyelembe
+        active_dedup = (
+            live_outages[live_outages["aktív"]]
+            .sort_values("start", ascending=False)
+            .drop_duplicates(subset="resource_name", keep="first")
+        )
+        active_mw = active_dedup["unavailable_mw"].sum()
+        active_count = len(active_dedup)
+        st.metric(
+            "Jelenleg kiesett teljesítmény összesen (MW)",
+            f"{active_mw:,.0f}",
+            help=f"{active_count} jelenleg aktív esemény, erőművenként egy bejelentés (a duplikált/frissített bejelentések összevonva)",
+        )
+
+        only_active = st.checkbox("Csak a jelenleg aktív kiesések mutatása", value=True, key="outages_active_only")
+        display_df = active_dedup if only_active else live_outages.sort_values("start", ascending=False)
+
+        if display_df.empty:
+            st.info("Nincs jelenleg aktív kiesés." if only_active else "Nincs kiesés-adat.")
+        else:
+            st.dataframe(
+                display_df[["resource_name", "típus", "start", "end", "unavailable_mw", "nominal_mw"]].rename(
+                    columns={
+                        "resource_name": "Erőmű",
+                        "start": "Kezdet (UTC)",
+                        "end": "Vég (UTC)",
+                        "unavailable_mw": "Kiesett (MW)",
+                        "nominal_mw": "Névleges kapacitás (MW)",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+    else:
+        st.info("Nincs élő üzemzavar-adat (vagy hiányzik az ENTSOE_API_TOKEN).")
+except Exception as e:
+    st.error(f"Nem sikerült lekérni az üzemzavar-adatokat: {e}")
 
 st.divider()
 
